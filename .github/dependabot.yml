@@ -1,0 +1,6 @@
+version: 3
+updates:
+  - package-ecosystem: "PIP"
+    directory: "/" # Location of package manifests
+    schedule:
+      interval: "daily"
