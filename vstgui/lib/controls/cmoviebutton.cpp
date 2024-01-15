@@ -5,6 +5,7 @@
 #include "cmoviebutton.h"
 #include "../cdrawcontext.h"
 #include "../cbitmap.h"
+#include "../events.h"
 
 namespace VSTGUI {
 
@@ -17,16 +18,19 @@ namespace VSTGUI {
  * @param listener the listener
  * @param tag the control tag
  * @param background bitmap
- * @param offset
  */
 //------------------------------------------------------------------------
-CMovieButton::CMovieButton (const CRect& size, IControlListener* listener, int32_t tag, CBitmap* background, const CPoint &offset)
-: CControl (size, listener, tag, background), offset (offset), buttonState (value)
+CMovieButton::CMovieButton (const CRect& size, IControlListener* listener, int32_t tag,
+							CBitmap* background)
+: CControl (size, listener, tag, background), buttonState (value)
 {
+#if VSTGUI_ENABLE_DEPRECATED_METHODS
 	heightOfOneImage = size.getHeight ();
+#endif
 	setWantsFocus (true);
 }
 
+#if VSTGUI_ENABLE_DEPRECATED_METHODS
 //------------------------------------------------------------------------
 /**
  * CMovieButton constructor.
@@ -46,32 +50,37 @@ CMovieButton::CMovieButton (const CRect& size, IControlListener* listener, int32
 	setHeightOfOneImage (heightOfOneImage);
 	setWantsFocus (true);
 }
+#endif
 
 //------------------------------------------------------------------------
-CMovieButton::CMovieButton (const CMovieButton& v)
-: CControl (v)
-, offset (v.offset)
-, buttonState (v.buttonState)
+CMovieButton::CMovieButton (const CMovieButton& v) : CControl (v), buttonState (v.buttonState)
 {
+#if VSTGUI_ENABLE_DEPRECATED_METHODS
+	offset = v.offset;
 	setHeightOfOneImage (v.heightOfOneImage);
+#endif
 	setWantsFocus (true);
 }
 
 //------------------------------------------------------------------------
 void CMovieButton::draw (CDrawContext *pContext)
 {
-	CPoint where;
-
-	where.x = 0;
-
-	if (value == getMax ())
-		where.y = heightOfOneImage;
-	else
-		where.y = 0;
-
-	if (getDrawBackground ())
+	if (auto bitmap = getDrawBackground ())
 	{
-		getDrawBackground ()->draw (pContext, getViewSize (), where);
+		if (auto mfb = dynamic_cast<CMultiFrameBitmap*> (bitmap))
+		{
+			auto frameIndex = getMultiFrameBitmapIndex (*mfb, getValueNormalized ());
+			mfb->drawFrame (pContext, frameIndex, getViewSize ().getTopLeft ());
+		}
+		else
+		{
+			CPoint where {};
+#if VSTGUI_ENABLE_DEPRECATED_METHODS
+			if (value == getMax ())
+				where.y = heightOfOneImage;
+#endif
+			bitmap->draw (pContext, getViewSize (), where);
+		}
 	}
 	buttonState = value;
 
@@ -136,28 +145,40 @@ CMouseEventResult CMovieButton::onMouseCancel ()
 }
 
 //------------------------------------------------------------------------
-int32_t CMovieButton::onKeyDown (VstKeyCode& keyCode)
+void CMovieButton::onKeyboardEvent (KeyboardEvent& event)
 {
-	if (keyCode.virt == VKEY_RETURN && keyCode.modifier == 0)
+	if (event.type != EventType::KeyDown || event.modifiers.empty () == false)
+		return;
+	if (event.virt == VirtualKey::Return)
 	{
 		value = (value == getMax ()) ? getMin () : getMax ();
 		invalid ();
 		beginEdit ();
 		valueChanged ();
 		endEdit ();
-		return 1;
+		event.consumed = true;
 	}
-	return -1;
 }
 
 //-----------------------------------------------------------------------------------------------
 bool CMovieButton::sizeToFit ()
 {
-	if (getDrawBackground ())
+	if (auto bitmap = getDrawBackground ())
 	{
 		CRect vs (getViewSize ());
-		vs.setWidth (getDrawBackground ()->getWidth ());
-		vs.setHeight (getHeightOfOneImage ());
+		if (auto mfb = dynamic_cast<CMultiFrameBitmap*> (bitmap))
+		{
+			vs.setSize (mfb->getFrameSize ());
+		}
+		else
+		{
+			vs.setWidth (bitmap->getWidth ());
+#if VSTGUI_ENABLE_DEPRECATED_METHODS
+			vs.setHeight (getHeightOfOneImage ());
+#else
+			vs.setHeight (bitmap->getHeight ());
+#endif
+		}
 		setViewSize (vs);
 		setMouseableArea (vs);
 		return true;

@@ -9,14 +9,15 @@
 #include "../iplatformresourceinputstream.h"
 #include "../iplatformstring.h"
 #include "../iplatformtimer.h"
-#include "carbon/hiviewframe.h"
 #include "cfontmac.h"
 #include "cgbitmap.h"
-#include "cgdrawcontext.h"
+#include "quartzgraphicspath.h"
+#include "coregraphicsdevicecontext.h"
 #include "cocoa/nsviewframe.h"
 #include "ios/uiviewframe.h"
 #include "macclipboard.h"
 #include "macfactory.h"
+#include "macfileselector.h"
 #include "macglobals.h"
 #include "macstring.h"
 #include "mactimer.h"
@@ -33,6 +34,8 @@ struct MacFactory::Impl
 	struct mach_timebase_info timebaseInfo;
 	CFBundleRef bundle {nullptr};
 	bool useAsynchronousLayerDrawing {true};
+	bool visualizeRedrawAreas {false};
+	CoreGraphicsDeviceFactory graphicsDeviceFactory;
 };
 
 //-----------------------------------------------------------------------------
@@ -42,6 +45,8 @@ MacFactory::MacFactory (CFBundleRef bundle)
 	impl->bundle = bundle;
 	mach_timebase_info (&impl->timebaseInfo);
 }
+
+MacFactory::~MacFactory () noexcept = default;
 
 //-----------------------------------------------------------------------------
 CFBundleRef MacFactory::getBundle () const noexcept
@@ -62,6 +67,18 @@ bool MacFactory::getUseAsynchronousLayerDrawing () const noexcept
 }
 
 //-----------------------------------------------------------------------------
+void MacFactory::enableVisualizeRedrawAreas (bool state) const noexcept
+{
+	impl->visualizeRedrawAreas = state;
+}
+
+//-----------------------------------------------------------------------------
+bool MacFactory::enableVisualizeRedrawAreas () const noexcept
+{
+	return impl->visualizeRedrawAreas;
+}
+
+//-----------------------------------------------------------------------------
 uint64_t MacFactory::getTicks () const noexcept
 {
 	uint64_t absTime = mach_absolute_time ();
@@ -77,10 +94,6 @@ PlatformFramePtr MacFactory::createFrame (IPlatformFrameCallback* frame, const C
 #if TARGET_OS_IPHONE
 	return makeOwned<UIViewFrame> (frame, size, (__bridge UIView*)parent);
 #else
-#if MAC_CARBON
-	if (platformType == PlatformType::kWindowRef || platformType == PlatformType::kDefaultNative)
-		return makeOwned<HIViewFrame> (frame, size, reinterpret_cast<WindowRef> (parent));
-#endif // MAC_CARBON
 	return makeOwned<NSViewFrame> (frame, size, reinterpret_cast<NSView*> (parent), config);
 #endif
 }
@@ -200,16 +213,27 @@ auto MacFactory::getClipboard () const noexcept -> DataPackagePtr
 #endif
 }
 
-//------------------------------------------------------------------------
-auto MacFactory::createOffscreenContext (const CPoint& size, double scaleFactor) const noexcept
-	-> COffscreenContextPtr
+//-----------------------------------------------------------------------------
+PlatformGradientPtr MacFactory::createGradient () const noexcept
 {
-	auto bitmap = makeOwned<CGBitmap> (size * scaleFactor);
-	bitmap->setScaleFactor (scaleFactor);
-	auto context = makeOwned<CGDrawContext> (bitmap);
-	if (context->getCGContext ())
-		return std::move (context);
+	return std::make_unique<QuartzGradient> ();
+}
+
+//-----------------------------------------------------------------------------
+PlatformFileSelectorPtr MacFactory::createFileSelector (PlatformFileSelectorStyle style,
+														IPlatformFrame* frame) const noexcept
+{
+#if !TARGET_OS_IPHONE
+	auto nsViewFrame = dynamic_cast<NSViewFrame*> (frame);
+	return createCocoaFileSelector (style, nsViewFrame);
+#endif
 	return nullptr;
+}
+
+//-----------------------------------------------------------------------------
+const IPlatformGraphicsDeviceFactory& MacFactory::getGraphicsDeviceFactory () const noexcept
+{
+	return impl->graphicsDeviceFactory;
 }
 
 //-----------------------------------------------------------------------------

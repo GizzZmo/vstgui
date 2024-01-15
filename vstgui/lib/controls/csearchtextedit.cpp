@@ -6,6 +6,7 @@
 
 #include "../cframe.h"
 #include "../cgraphicspath.h"
+#include "../cdrawcontext.h"
 
 namespace VSTGUI {
 
@@ -116,10 +117,10 @@ void CSearchTextEdit::draw (CDrawContext *pContext)
 		CColor color (fontColor);
 		color.alpha /= 2;
 		setFontColor (color);
-		drawPlatformText (pContext, getPlaceholderString ().getPlatformString (), getTextRect ());
+		drawPlatformText (pContext, getPlaceholderString (), getTextRect ());
 	}
 	else
-		drawPlatformText (pContext, getText ().getPlatformString (), getTextRect ());
+		drawPlatformText (pContext, getText (), getTextRect ());
 
 	setDirty (false);
 	setFontColor (origFontColor);

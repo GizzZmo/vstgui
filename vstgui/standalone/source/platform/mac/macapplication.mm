@@ -122,6 +122,10 @@ static CommandWithKeyList getCommandList (const char* _Nonnull group)
 	{
 		return Detail::getApplicationPlatformAccess ()->canHandleCommand ([command command]);
 	}
+	else if (menuItem.action == @selector (visualizeRedrawAreas:) || menuItem.action == @selector (useAsynchronousCALayerDrawing:))
+	{
+		return YES;
+	}
 	return NO;
 }
 
@@ -304,13 +308,15 @@ static CommandWithKeyList getCommandList (const char* _Nonnull group)
 {
 	NSMenu* mainMenu = [NSApp mainMenu];
 	NSMenuItem* appMenuItem = nil;
-	if (mainMenu == nil)
+	if (mainMenu == nil || mainMenu.itemArray.count == 1)
 	{
-		mainMenu = [NSMenu new];
-		[NSApp setMainMenu:mainMenu];
-
-		appMenuItem = [[NSMenuItem alloc] initWithTitle:@"App" action:nil keyEquivalent:@""];
-		[mainMenu addItem:appMenuItem];
+		if (mainMenu == nil)
+		{
+			mainMenu = [NSMenu new];
+			[NSApp setMainMenu:mainMenu];
+			appMenuItem = [[NSMenuItem alloc] initWithTitle:@"App" action:nil keyEquivalent:@""];
+			[mainMenu addItem:appMenuItem];
+		}
 
 		NSMenuItem* item =
 		    [[NSMenuItem alloc] initWithTitle:NSLocalizedString (@"Window", "Menu Name")
@@ -402,26 +408,34 @@ static CommandWithKeyList getCommandList (const char* _Nonnull group)
 	}
 
 	NSMenuItem* debugMenu = [mainMenu itemWithTitle:@"Debug"];
-	if (debugMenu && debugMenu.submenu)
+	if (debugMenu && debugMenu.submenu && [debugMenu.submenu itemWithTitle:@"Color Panel"] == nil)
 	{
-		if ([debugMenu.submenu itemWithTitle:@"Color Panel"] == nil)
-		{
-			[debugMenu.submenu addItem:[NSMenuItem separatorItem]];
-			[debugMenu.submenu addItemWithTitle:@"Color Panel"
-			                             action:@selector (orderFrontColorPanel:)
-			                      keyEquivalent:@""];
-		}
+		[debugMenu.submenu addItem:[NSMenuItem separatorItem]];
+		[debugMenu.submenu addItemWithTitle:@"Color Panel"
+		                             action:@selector (orderFrontColorPanel:)
+		                      keyEquivalent:@""];
+		[debugMenu.submenu addItem:[NSMenuItem separatorItem]];
+		[debugMenu.submenu addItemWithTitle:@"Use Asynchronous CALayer Drawing"
+		                             action:@selector (useAsynchronousCALayerDrawing:)
+		                      keyEquivalent:@""];
+		[debugMenu.submenu addItemWithTitle:@"Visualize Redraw Areas"
+		                             action:@selector (visualizeRedrawAreas:)
+		                      keyEquivalent:@""];
+		[self updateDebugMenuItems];
 	}
 
 	// move Windows menu to the end
-	NSMenuItem* windowsMenuItem =
-	    [mainMenu itemWithTitle:NSLocalizedString (@"Window", "Menu Name")];
-	[mainMenu removeItem:windowsMenuItem];
-	[mainMenu addItem:windowsMenuItem];
+	if (auto* windowsMenuItem = [mainMenu itemWithTitle:NSLocalizedString (@"Window", "Menu Name")])
+	{
+		[mainMenu removeItem:windowsMenuItem];
+		[mainMenu addItem:windowsMenuItem];
+	}
 	// move Help menu to the end
-	NSMenuItem* helpMenuItem = [mainMenu itemWithTitle:NSLocalizedString (@"Help", "Menu Name")];
-	[mainMenu removeItem:helpMenuItem];
-	[mainMenu addItem:helpMenuItem];
+	if (auto* helpMenuItem = [mainMenu itemWithTitle:NSLocalizedString (@"Help", "Menu Name")])
+	{
+		[mainMenu removeItem:helpMenuItem];
+		[mainMenu addItem:helpMenuItem];
+	}
 }
 
 //------------------------------------------------------------------------
@@ -434,6 +448,43 @@ static CommandWithKeyList getCommandList (const char* _Nonnull group)
 		[self setupMainMenu];
 		self.hasTriggeredSetupMainMenu = NO;
 	});
+}
+
+//------------------------------------------------------------------------
+- (void)visualizeRedrawAreas:(id)sender
+{
+	auto state = VSTGUI::getPlatformFactory ().asMacFactory ()->enableVisualizeRedrawAreas ();
+	VSTGUI::getPlatformFactory ().asMacFactory ()->enableVisualizeRedrawAreas (!state);
+	[self updateDebugMenuItems];
+}
+
+//------------------------------------------------------------------------
+- (void)useAsynchronousCALayerDrawing:(id)sender
+{
+	auto state = VSTGUI::getPlatformFactory ().asMacFactory ()->getUseAsynchronousLayerDrawing ();
+	VSTGUI::getPlatformFactory ().asMacFactory ()->setUseAsynchronousLayerDrawing (!state);
+	[self updateDebugMenuItems];
+}
+
+//------------------------------------------------------------------------
+- (void)updateDebugMenuItems
+{
+	NSMenuItem* debugMenu = [NSApp.mainMenu itemWithTitle:@"Debug"];
+	if (debugMenu && debugMenu.submenu)
+	{
+		if (auto item = [debugMenu.submenu itemWithTitle:@"Visualize Redraw Areas"])
+		{
+			auto state =
+			    VSTGUI::getPlatformFactory ().asMacFactory ()->enableVisualizeRedrawAreas ();
+			item.state = state ? NSControlStateValueOn : NSControlStateValueOff;
+		}
+		if (auto item = [debugMenu.submenu itemWithTitle:@"Use Asynchronous CALayer Drawing"])
+		{
+			auto state =
+			    VSTGUI::getPlatformFactory ().asMacFactory ()->getUseAsynchronousLayerDrawing ();
+			item.state = state ? NSControlStateValueOn : NSControlStateValueOff;
+		}
+	}
 }
 
 #if !VSTGUI_STANDALONE_USE_GENERIC_ALERTBOX_ON_MACOS
@@ -658,6 +709,24 @@ static CommandWithKeyList getCommandList (const char* _Nonnull group)
 //------------------------------------------------------------------------
 int main (int argc, const char* _Nonnull* _Nonnull argv)
 {
+#if DEBUG
+	struct LeakDetector
+	{
+		~LeakDetector () noexcept
+		{
+			char* env = getenv ("MallocStackLogging");
+			if (env && (!strcmp (env, "1") || !strcmp (env, "lite")))
+			{
+				char command[1024];
+				pid_t pid = getpid ();
+				snprintf (command, std::size (command), "leaks %d", pid);
+				system (command);
+			}
+		}
+	};
+	static LeakDetector gLeakDetector;
+#endif
+
 	VSTGUI::init (CFBundleGetMainBundle ());
 	VSTGUIApplicationDelegate* delegate = [VSTGUIApplicationDelegate new];
 	[NSApplication sharedApplication].delegate = delegate;

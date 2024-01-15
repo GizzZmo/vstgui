@@ -186,13 +186,13 @@ void CParamDisplay::draw (CDrawContext *pContext)
 	{
 		char tmp[255];
 		char precisionStr[10];
-		sprintf (precisionStr, "%%.%hhuf", valuePrecision);
-		sprintf (tmp, precisionStr, value);
+		snprintf (precisionStr, 10, "%%.%hhuf", valuePrecision);
+		snprintf (tmp, 255, precisionStr, value);
 		string = tmp;
 	}
 
 	drawBack (pContext);
-	drawPlatformText (pContext, UTF8String (string).getPlatformString ());
+	drawPlatformText (pContext, UTF8String (string));
 	setDirty (false);
 }
 
@@ -322,13 +322,14 @@ void CParamDisplay::drawBack (CDrawContext* pContext, CBitmap* newBack)
 }
 
 //------------------------------------------------------------------------
-void CParamDisplay::drawPlatformText (CDrawContext* pContext, IPlatformString* string)
+void CParamDisplay::drawPlatformText (CDrawContext* pContext, const UTF8String& string)
 {
 	drawPlatformText (pContext, string, getViewSize ());
 }
 
 //------------------------------------------------------------------------
-void CParamDisplay::drawPlatformText (CDrawContext* pContext, IPlatformString* string, const CRect& size)
+void CParamDisplay::drawPlatformText (CDrawContext* pContext, const UTF8String& string,
+									  const CRect& size)
 {
 	if (!hasBit (style, kNoTextStyle))
 	{
@@ -351,10 +352,12 @@ void CParamDisplay::drawPlatformText (CDrawContext* pContext, IPlatformString* s
 				CRect newSize (textRect);
 				newSize.offset (shadowTextOffset);
 				pContext->setFontColor (shadowColor);
-				pContext->drawString (string, newSize, horiTxtAlign, hasBit (style, kAntialias));
+				pContext->drawString (string.getPlatformString (), newSize, horiTxtAlign,
+									  hasBit (style, kAntialias));
 			}
 			pContext->setFontColor (fontColor);
-			pContext->drawString (string, textRect, horiTxtAlign, hasBit (style, kAntialias));
+			pContext->drawString (string.getPlatformString (), textRect, horiTxtAlign,
+								  hasBit (style, kAntialias));
 		});
 		pContext->restoreGlobalState ();
 	}

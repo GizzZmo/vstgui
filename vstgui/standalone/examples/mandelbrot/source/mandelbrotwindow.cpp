@@ -77,7 +77,8 @@ inline std::function<uint32_t (CColor)> getColorToInt32 (IPlatformBitmapPixelAcc
 			};
 			break;
 		}
-		case IPlatformBitmapPixelAccess::kBGRA:
+		//case IPlatformBitmapPixelAccess::kBGRA:
+		default:
 		{
 			return [] (CColor color) {
 				return (color.blue) | (color.green << 8) | (color.red << 16) | (color.alpha << 24);
@@ -231,7 +232,7 @@ struct ViewController : DelegationController,
 	{
 		if (auto frame = view->getFrame ())
 		{
-			frame->registerScaleFactorChangedListeneer (this);
+			frame->registerScaleFactorChangedListener (this);
 			scaleFactor = frame->getScaleFactor ();
 			updateMandelbrot ();
 		}
@@ -240,7 +241,7 @@ struct ViewController : DelegationController,
 	{
 		if (auto frame = view->getFrame ())
 		{
-			frame->unregisterScaleFactorChangedListeneer (this);
+			frame->unregisterScaleFactorChangedListener (this);
 		}
 	}
 	void viewWillDelete (CView* view) override

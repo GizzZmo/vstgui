@@ -9,9 +9,9 @@
 #if MAC_COCOA && !TARGET_OS_IPHONE
 
 #include "../../platform_macos.h"
-#include "../../../cview.h"
 #include "../../../cinvalidrectlist.h"
 #include "../../../idatapackage.h"
+#import "../coregraphicsdevicecontext.h"
 #include "nsviewdraggingsession.h"
 #include <list>
 
@@ -37,6 +37,7 @@ public:
 	~NSViewFrame () noexcept override;
 
 	NSView* getNSView () const override { return nsView; }
+	CALayer* getCALayer () const { return caLayer; }
 	IPlatformFrameCallback* getFrame () const { return frame; }
 	void* makeTouchBar () const;
 	NSViewDraggingSession* getDraggingSession () const { return draggingSession; }
@@ -46,8 +47,6 @@ public:
 #if VSTGUI_ENABLE_DEPRECATED_METHODS
 	void setLastDragOperationResult (DragResult result) { lastDragOperationResult = result; }
 #endif
-	void setIgnoreNextResignFirstResponder (bool state) { ignoreNextResignFirstResponder = state; }
-	bool getIgnoreNextResignFirstResponder () const { return ignoreNextResignFirstResponder; }
 
 	void setDragDataPackage (SharedPointer<IDataPackage>&& package) { dragDataPackage = std::move (package); }
 	const SharedPointer<IDataPackage>& getDragDataPackage () const { return dragDataPackage; }
@@ -55,7 +54,8 @@ public:
 	void initTrackingArea ();
 	void scaleFactorChanged (double newScaleFactor);
 	void cursorUpdate ();
-	virtual void drawRect (NSRect* rect);
+	void drawLayer (CALayer* layer, CGContextRef ctx);
+	void drawRect (NSRect* rect);
 	bool onMouseDown (NSEvent* evt);
 	bool onMouseUp (NSEvent* evt);
 	bool onMouseMoved (NSEvent* evt);
@@ -66,6 +66,7 @@ public:
 	bool getSize (CRect& size) const override;
 	bool getCurrentMousePosition (CPoint& mousePosition) const override;
 	bool getCurrentMouseButtons (CButtonState& buttons) const override;
+	bool getCurrentModifiers (Modifiers& modifiers) const override;
 	bool setMouseCursor (CCursorType type) override;
 	bool invalidRect (const CRect& rect) override;
 	bool scrollRect (const CRect& src, const CPoint& distance) override;
@@ -94,12 +95,12 @@ public:
 
 //-----------------------------------------------------------------------------
 protected:
+	void draw (CGContextRef context, CRect updateRect, double scaleFactor);
 	void addDebugRedrawRect (CRect r, bool isClipBoundingBox = false);
 
-	static void initClass ();
-
-	NSView* nsView;
-	CocoaTooltipWindow* tooltipWindow;
+	NSView* nsView {nullptr};
+	CALayer* caLayer {nullptr};
+	CocoaTooltipWindow* tooltipWindow {nullptr};
 	SharedPointer<IDataPackage> dragDataPackage;
 	SharedPointer<ITouchBarCreator> touchBarCreator;
 	SharedPointer<NSViewDraggingSession> draggingSession;
@@ -108,13 +109,10 @@ protected:
 #if VSTGUI_ENABLE_DEPRECATED_METHODS
 	DragResult lastDragOperationResult;
 #endif
-	bool ignoreNextResignFirstResponder;
 	bool trackingAreaInitialized;
 	bool inDraw;
 	bool useInvalidRects {false};
-#if DEBUG
-	bool visualizeDirtyRects {false};
-#endif
+
 	CCursorType cursor;
 	CButtonState mouseDownButtonState {};
 	CInvalidRectList invalidRectList;

@@ -19,12 +19,14 @@
 #include "../cstream.h"
 #include "../detail/uiviewcreatorattributes.h"
 #include "../../lib/cvstguitimer.h"
+#include "../../lib/cexternalview.h"
 #include "../../lib/cframe.h"
 #include "../../lib/cscrollview.h"
 #include "../../lib/cdropsource.h"
 #include "../../lib/coffscreencontext.h"
 #include "../../lib/clayeredviewcontainer.h"
 #include "../../lib/dragging.h"
+#include "../../lib/events.h"
 #include "../../lib/idatapackage.h"
 #include "../../lib/controls/ctextedit.h"
 #include <cassert>
@@ -32,7 +34,7 @@
 namespace VSTGUI {
 
 namespace UIEditViewInternal {
-	
+
 //----------------------------------------------------------------------------------------------------
 class UISelectionView : public UIOverlayView, public UISelectionListenerAdapter
 //----------------------------------------------------------------------------------------------------
@@ -204,7 +206,66 @@ void UIHighlightView::draw (CDrawContext* pContext)
 	pContext->drawRect (r, kDrawFilledAndStroked);
 }
 
+//------------------------------------------------------------------------
+template<typename T>
+void collectExternalViewsOnInlineEditing (CViewContainer* container, T& array)
+{
+	container->forEachChild ([&] (auto view) {
+		if (view.template cast<ExternalView::IViewEmbedder> ())
+			array.emplace_back (view);
+		else if (auto c = view->asViewContainer ())
+			collectExternalViewsOnInlineEditing (c, array);
+	});
+}
+
 } // UIEditViewInternal
+
+//------------------------------------------------------------------------
+struct UIEditView::ViewAddedObserver : IViewAddedRemovedObserver,
+									   ViewListenerAdapter
+{
+	~ViewAddedObserver () override
+	{
+		for (auto view : views)
+		{
+			if (auto viewEmbedder = dynamic_cast<ExternalView::IViewEmbedder*> (view))
+			{
+				if (auto ev = viewEmbedder->getExternalView ())
+					ev->setMouseEnabled (view->getMouseEnabled ());
+			}
+			view->unregisterViewListener (this);
+		}
+	}
+	void onViewAdded (CFrame* frame, CView* view) override
+	{
+		if (auto viewEmbedder = dynamic_cast<ExternalView::IViewEmbedder*> (view))
+		{
+			if (auto ev = viewEmbedder->getExternalView ())
+				ev->setMouseEnabled (false);
+			view->registerViewListener (this);
+			views.emplace_back (view);
+		}
+	}
+	void onViewRemoved (CFrame* frame, CView* view) override {}
+
+	void viewWillDelete (CView* view) override
+	{
+		view->unregisterViewListener (this);
+		auto it = std::find (views.begin (), views.end (), view);
+		if (it != views.end ())
+			views.erase (it);
+	}
+	void viewOnMouseEnabled (CView* view, bool state) override
+	{
+		if (auto viewEmbedder = dynamic_cast<ExternalView::IViewEmbedder*> (view))
+		{
+			if (auto ev = viewEmbedder->getExternalView ())
+				ev->setMouseEnabled (false);
+		}
+	}
+
+	std::vector<CView*> views;
+};
 
 //----------------------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------------------
@@ -273,7 +334,7 @@ void UIEditView::enableEditing (bool state)
 		CFrame* parent = getFrame ();
 		if (parent == nullptr)
 			return;
-		
+
 		if (editing)
 		{
 			CRect r = parent->getViewSize ();
@@ -283,9 +344,9 @@ void UIEditView::enableEditing (bool state)
 			overlayView->setAutosizeFlags (kAutosizeAll);
 			overlayView->setMouseEnabled (false);
 			overlayView->setTransparency (true);
-			overlayView->setZIndex (1);
+			overlayView->setZIndex (std::numeric_limits<uint32_t>::max () - 1);
 			parent->addView (overlayView);
-			
+
 			highlightView = new UIEditViewInternal::UIHighlightView (this, viewHighlightColor);
 			overlayView->addView (highlightView);
 			auto selectionView = new UIEditViewInternal::UISelectionView (this, getSelection (), viewSelectionColor, kResizeHandleSize);
@@ -298,6 +359,25 @@ void UIEditView::enableEditing (bool state)
 			highlightView = nullptr;
 			lines = nullptr;
 		}
+		disableExternalViewsOnInlineEditing (editing);
+	}
+}
+
+//------------------------------------------------------------------------
+void UIEditView::disableExternalViewsOnInlineEditing (bool state)
+{
+	CFrame* parent = getFrame ();
+	if (editingViewAddedObserver)
+		parent->setViewAddedRemovedObserver (nullptr);
+	editingViewAddedObserver.reset ();
+	if (state)
+	{
+		editingViewAddedObserver = std::make_unique<ViewAddedObserver> ();
+		std::vector<CView*> views;
+		UIEditViewInternal::collectExternalViewsOnInlineEditing (this, views);
+		for (auto* v : views)
+			editingViewAddedObserver->onViewAdded (parent, v);
+		parent->setViewAddedRemovedObserver (editingViewAddedObserver.get ());
 	}
 }
 
@@ -348,6 +428,7 @@ void UIEditView::setEditView (CView* view)
 {
 	if (view != getEditView ())
 	{
+		disableExternalViewsOnInlineEditing (false);
 		invalid ();
 		removeAll ();
 		CRect vs (getViewSize ());
@@ -363,6 +444,7 @@ void UIEditView::setEditView (CView* view)
 			setMouseableArea (vs);
 			setViewSize (vs);
 		}
+		disableExternalViewsOnInlineEditing (editing);
 		invalid ();
 	}
 }
@@ -420,7 +502,7 @@ void UIEditView::drawRect (CDrawContext *pContext, const CRect& updateRect)
 
 	if (!editing && focusDrawing)
 		getFrame ()->setFocusDrawingEnabled (focusDrawing);
-	
+
 	pContext->setClipRect (updateRect);
 
 	CDrawContext::Transform transform (*pContext, CGraphicsTransform ().translate (getViewSize ().left, getViewSize ().top));
@@ -481,11 +563,22 @@ bool UIEditView::advanceNextFocusView (CView* oldFocus, bool reverse)
 }
 
 //----------------------------------------------------------------------------------------------------
-bool UIEditView::onWheel (const CPoint &where, const CMouseWheelAxis &axis, const float &distance, const CButtonState &buttons)
+void UIEditView::onMouseWheelEvent (MouseWheelEvent& event)
 {
-	if (editing == false)
-		return CViewContainer::onWheel (where, axis, distance, buttons);
-	return false;
+	if (!editing)
+		CViewContainer::onMouseWheelEvent (event);
+}
+
+//------------------------------------------------------------------------
+void UIEditView::onZoomGestureEvent (ZoomGestureEvent& event)
+{
+	if (editing)
+	{
+		auto scale = getTransform ().m11;
+		auto newScale = scale + scale * event.zoom;
+		setScale (newScale);
+		event.consumed = true;
+	}
 }
 
 //----------------------------------------------------------------------------------------------------
@@ -558,9 +651,9 @@ UIEditView::MouseSizeMode UIEditView::selectionHitTest (const CPoint& _where, CV
 }
 
 //----------------------------------------------------------------------------------------------------
-bool UIEditView::hitTestSubViews (const CPoint& where, const CButtonState& buttons)
+bool UIEditView::hitTestSubViews (const CPoint& where, const Event& event)
 {
-	return hitTest (where, buttons);
+	return hitTest (where, event);
 }
 
 //----------------------------------------------------------------------------------------------------
@@ -831,9 +924,10 @@ CMouseEventResult UIEditView::onMouseMoved (CPoint &where, const CButtonState& b
 }
 
 //------------------------------------------------------------------------
-int32_t UIEditView::onKeyDown (VstKeyCode& keyCode)
+void UIEditView::onKeyboardEvent (KeyboardEvent& event)
 {
-	if (mouseEditMode != MouseEditMode::NoEditing && keyCode.virt == VKEY_ESCAPE)
+	if (mouseEditMode != MouseEditMode::NoEditing && event.virt == VirtualKey::Escape &&
+	    event.type == EventType::KeyDown)
 	{
 		if (lines)
 		{
@@ -848,9 +942,10 @@ int32_t UIEditView::onKeyDown (VstKeyCode& keyCode)
 		}
 		mouseEditMode = MouseEditMode::NoEditing;
 		getFrame ()->setCursor (kCursorDefault);
-		return 1;
+		event.consumed = true;
+		return;
 	}
-	return CViewContainer::onKeyDown (keyCode);
+	CViewContainer::onKeyboardEvent (event);
 }
 
 //-----------------------------------------------------------------------------
@@ -1328,6 +1423,12 @@ bool UIEditView::attached (CView* parent)
 //-----------------------------------------------------------------------------
 bool UIEditView::removed (CView* parent)
 {
+	auto frame = getFrame ();
+	if (editingViewAddedObserver)
+	{
+		frame->setViewAddedRemovedObserver (nullptr);
+		editingViewAddedObserver.reset ();
+	}
 	IController* controller = getViewController (this, true);
 	if (controller)
 	{
@@ -1337,9 +1438,10 @@ bool UIEditView::removed (CView* parent)
 	}
 	if (overlayView)
 	{
-		getFrame()->removeView (overlayView);
+		frame->removeView (overlayView);
 		overlayView = nullptr;
 	}
+	frame->setCursor (kCursorDefault);
 	return CViewContainer::removed (parent);
 }
 

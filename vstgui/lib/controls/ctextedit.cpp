@@ -5,6 +5,8 @@
 #include "ctextedit.h"
 #include "itexteditlistener.h"
 #include "../cframe.h"
+#include "../cdrawcontext.h"
+#include "../events.h"
 #include "../platform/iplatformframe.h"
 #include <cassert>
 
@@ -120,8 +122,8 @@ void CTextEdit::setValue (float val)
 	{
 		char tmp[255];
 		char precisionStr[10];
-		sprintf (precisionStr, "%%.%hhuf", valuePrecision);
-		sprintf (tmp, precisionStr, getValue ());
+		snprintf (precisionStr, 10, "%%.%hhuf", valuePrecision);
+		snprintf (tmp, 255, precisionStr, getValue ());
 		string = tmp;
 	}
 
@@ -186,7 +188,7 @@ void CTextEdit::draw (CDrawContext *pContext)
 		{
 			pContext->saveGlobalState ();
 			pContext->setGlobalAlpha (pContext->getGlobalAlpha () * 0.5f);
-			drawPlatformText (pContext, placeholderString.getPlatformString ());
+			drawPlatformText (pContext, placeholderString);
 			pContext->restoreGlobalState ();
 		}
 		setDirty (false);
@@ -199,7 +201,7 @@ void CTextEdit::draw (CDrawContext *pContext)
 		{
 			pContext->saveGlobalState ();
 			pContext->setGlobalAlpha (pContext->getGlobalAlpha () * 0.5f);
-			drawPlatformText (pContext, placeholderString.getPlatformString ());
+			drawPlatformText (pContext, placeholderString);
 			pContext->restoreGlobalState ();
 		}
 	}
@@ -209,7 +211,7 @@ void CTextEdit::draw (CDrawContext *pContext)
 		UTF8String str;
 		for (auto i = 0u; i < text.length (); ++i)
 			str += bulletCharacter;
-		drawPlatformText (pContext, str.getPlatformString ());
+		drawPlatformText (pContext, str);
 	}
 	else
 		CTextLabel::draw (pContext);
@@ -237,27 +239,26 @@ CMouseEventResult CTextEdit::onMouseDown (CPoint& where, const CButtonState& but
 }
 
 //------------------------------------------------------------------------
-int32_t CTextEdit::onKeyDown (VstKeyCode& keyCode)
+void CTextEdit::onKeyboardEvent (KeyboardEvent& event)
 {
-	if (platformControl)
+	if (!platformControl || event.type != EventType::KeyDown)
+		return;
+	
+	if (event.virt == VirtualKey::Escape)
 	{
-		if (keyCode.virt == VKEY_ESCAPE)
-		{
-			bWasReturnPressed = false;
-			platformControl->setText (text);
-			getFrame ()->setFocusView (nullptr);
-			looseFocus ();
-			return 1;
-		}
-		else if (keyCode.virt == VKEY_RETURN)
-		{
-			bWasReturnPressed = true;
-			getFrame ()->setFocusView (nullptr);
-			looseFocus ();
-			return 1;
-		}
+		bWasReturnPressed = false;
+		platformControl->setText (text);
+		getFrame ()->setFocusView (nullptr);
+		looseFocus ();
+		event.consumed = true;
 	}
-	return -1;
+	else if (event.virt == VirtualKey::Return)
+	{
+		bWasReturnPressed = true;
+		getFrame ()->setFocusView (nullptr);
+		looseFocus ();
+		event.consumed = true;
+	}
 }
 
 //------------------------------------------------------------------------
@@ -296,21 +297,21 @@ void CTextEdit::platformLooseFocus (bool returnPressed)
 }
 
 //------------------------------------------------------------------------
-bool CTextEdit::platformOnKeyDown (const VstKeyCode& key)
+void CTextEdit::platformOnKeyboardEvent (KeyboardEvent& event)
 {
-	if (dynamic_cast<IPlatformFrameCallback*> (getFrame ())->platformOnKeyDown (const_cast<VstKeyCode&> (key)) == 1)
-		return true;
-	if (key.virt == VKEY_RETURN)
+	dynamic_cast<IPlatformFrameCallback*> (getFrame ())->platformOnEvent (event);
+	if (event.consumed)
+		return;
+	if (event.virt == VirtualKey::Return)
 	{
 		platformLooseFocus (true);
-		return true;
+		event.consumed = true;
 	}
-	else if (key.virt == VKEY_ESCAPE)
+	else if (event.virt == VirtualKey::Escape)
 	{
 		platformLooseFocus (false);
-		return true;
+		event.consumed = true;
 	}
-	return false;
 }
 
 //------------------------------------------------------------------------
@@ -381,8 +382,7 @@ void CTextEdit::looseFocus ()
 
 	CBaseObjectGuard guard (this);
 
-	auto _platformControl = platformControl;
-	platformControl = nullptr;
+	auto _platformControl = std::move (platformControl);
 	updateText (_platformControl);
 	
 	_platformControl = nullptr;

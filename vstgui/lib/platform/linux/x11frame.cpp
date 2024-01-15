@@ -19,7 +19,8 @@
 #include "../common/generictextedit.h"
 #include "../common/genericoptionmenu.h"
 #include "cairobitmap.h"
-#include "cairocontext.h"
+#include "linuxfactory.h"
+#include "cairographicscontext.h"
 #include "x11platform.h"
 #include "x11utils.h"
 #include <cassert>
@@ -34,10 +35,51 @@
 #undef None
 #endif
 
+#include "../../events.h"
+
 //------------------------------------------------------------------------
 namespace VSTGUI {
 namespace X11 {
 namespace {
+
+//------------------------------------------------------------------------
+inline void setupMouseEventButtons (MouseEvent& event, xcb_button_t value)
+{
+	switch (value)
+	{
+		case 1:
+			event.buttonState.add (MouseButton::Left);
+			break;
+		case 2:
+			event.buttonState.add (MouseButton::Middle);
+			break;
+		case 3:
+			event.buttonState.add (MouseButton::Right);
+			break;
+	}
+}
+
+//------------------------------------------------------------------------
+inline void setupMouseEventButtons (MouseEvent& event, int state)
+{
+	if (state & XCB_BUTTON_MASK_1)
+		event.buttonState.add (MouseButton::Left);
+	if (state & XCB_BUTTON_MASK_2)
+		event.buttonState.add (MouseButton::Right);
+	if (state & XCB_BUTTON_MASK_3)
+		event.buttonState.add (MouseButton::Middle);
+}
+
+//------------------------------------------------------------------------
+inline void setupEventModifiers (Modifiers& modifiers, int state)
+{
+	if (state & XCB_MOD_MASK_CONTROL)
+		modifiers.add (ModifierKey::Control);
+	if (state & XCB_MOD_MASK_SHIFT)
+		modifiers.add (ModifierKey::Shift);
+	if (state & (XCB_MOD_MASK_1 | XCB_MOD_MASK_5))
+		modifiers.add (ModifierKey::Alt);
+}
 
 //------------------------------------------------------------------------
 inline CButtonState translateMouseButtons (xcb_button_t value)
@@ -81,6 +123,21 @@ inline uint32_t translateModifiers (int state)
 }
 
 //------------------------------------------------------------------------
+inline Modifiers toModifiers (int state)
+{
+	Modifiers mods;
+	if (state & XCB_MOD_MASK_CONTROL)
+		mods.add (ModifierKey::Control);
+	if (state & XCB_MOD_MASK_SHIFT)
+		mods.add (ModifierKey::Shift);
+	if (state & (XCB_MOD_MASK_1 | XCB_MOD_MASK_5))
+		mods.add (ModifierKey::Alt);
+	if (state & XCB_MOD_MASK_4)
+		mods.add (ModifierKey::Super);
+	return mods;
+}
+
+//------------------------------------------------------------------------
 } // anonymous
 
 //------------------------------------------------------------------------
@@ -115,14 +172,10 @@ struct DrawHandler
 										   window.getID (), window.getVisual (),
 										   window.getSize ().x, window.getSize ().y);
 		windowSurface.assign (s);
+		device =
+			getPlatformFactory ().asLinuxFactory ()->getCairoGraphicsDeviceFactory ().addDevice (
+				cairo_surface_get_device (s));
 		onSizeChanged (window.getSize ());
-		device = cairo_device_reference (cairo_surface_get_device (s));
-	}
-
-	~DrawHandler ()
-	{
-		cairo_device_finish (device);
-		cairo_device_destroy (device);
 	}
 
 	void onSizeChanged (const CPoint& size)
@@ -130,46 +183,40 @@ struct DrawHandler
 		cairo_xcb_surface_set_size (windowSurface, size.x, size.y);
 		backBuffer = Cairo::SurfaceHandle (cairo_surface_create_similar (
 			windowSurface, CAIRO_CONTENT_COLOR_ALPHA, size.x, size.y));
-		CRect r;
-		r.setSize (size);
-		drawContext = makeOwned<Cairo::Context> (r, backBuffer);
+		backBufferSize.setSize (size);
+		auto cairoDevice = std::static_pointer_cast<CairoGraphicsDevice> (device);
+		drawContext = std::make_shared<CairoGraphicsDeviceContext> (*cairoDevice, backBuffer);
 	}
 
-	template<typename RectList, typename Proc>
-	void draw (const RectList& dirtyRects, Proc proc)
+	void draw (const CInvalidRectList& dirtyRects, IPlatformFrameCallback* frame)
 	{
-		CRect copyRect;
 		drawContext->beginDraw ();
-		for (auto rect : dirtyRects)
-		{
-			drawContext->setClipRect (rect);
-			drawContext->saveGlobalState ();
-			proc (drawContext, rect);
-			drawContext->restoreGlobalState ();
-			if (copyRect.isEmpty ())
-				copyRect = rect;
-			else
-				copyRect.unite (rect);
-		}
+		frame->platformDrawRects (drawContext, 1, dirtyRects.data ());
 		drawContext->endDraw ();
-		blitBackbufferToWindow (copyRect);
+
+		blitBackbufferToWindow (dirtyRects);
 		xcb_flush (RunLoop::instance ().getXcbConnection ());
 	}
 
 private:
-	cairo_device_t* device = nullptr;
 	Cairo::SurfaceHandle windowSurface;
 	Cairo::SurfaceHandle backBuffer;
-	SharedPointer<Cairo::Context> drawContext;
+	CRect backBufferSize;
+	std::shared_ptr<CairoGraphicsDeviceContext> drawContext;
+	PlatformGraphicsDevicePtr device;
 
-	void blitBackbufferToWindow (const CRect& rect)
+	void blitBackbufferToWindow (const CInvalidRectList& rects)
 	{
 		Cairo::ContextHandle windowContext (cairo_create (windowSurface));
-		cairo_rectangle (windowContext, rect.left, rect.top, rect.getWidth (), rect.getHeight ());
-		cairo_clip (windowContext);
 		cairo_set_source_surface (windowContext, backBuffer, 0, 0);
-		cairo_rectangle (windowContext, rect.left, rect.top, rect.getWidth (), rect.getHeight ());
-		cairo_fill (windowContext);
+		for (auto rect : rects)
+		{
+			cairo_rectangle (windowContext, rect.left, rect.top, rect.getWidth (),
+							 rect.getHeight ());
+			cairo_clip_preserve (windowContext);
+			cairo_fill (windowContext);
+			cairo_reset_clip (windowContext);
+		}
 		cairo_surface_flush (windowSurface);
 	}
 };
@@ -177,7 +224,20 @@ private:
 //------------------------------------------------------------------------
 struct DoubleClickDetector
 {
-	void onMouseDown (CPoint where, CButtonState& buttons, xcb_timestamp_t time)
+	void onEvent (MouseDownUpMoveEvent& event, xcb_timestamp_t time)
+	{
+		if (event.type == EventType::MouseDown)
+			onMouseDown (event.mousePosition, event.buttonState, time);
+		if (event.type == EventType::MouseMove)
+			onMouseMove (event.mousePosition, event.buttonState, time);
+		if (event.type == EventType::MouseUp)
+			onMouseUp (event.mousePosition, event.buttonState, time);
+		if (isDoubleClick)
+			event.clickCount = 2;
+	}
+
+private:
+	void onMouseDown (CPoint where, MouseEventButtonState buttonState, xcb_timestamp_t time)
 	{
 		switch (state)
 		{
@@ -185,8 +245,9 @@ struct DoubleClickDetector
 			case State::Uninitialized:
 			{
 				state = State::MouseDown;
-				firstClickState = buttons;
+				firstClickState = buttonState;
 				firstClickTime = time;
+				isDoubleClick = false;
 				point = where;
 				break;
 			}
@@ -194,7 +255,7 @@ struct DoubleClickDetector
 			{
 				if (timeInside (time) && pointInside (where))
 				{
-					buttons |= kDoubleClick;
+					isDoubleClick = true;
 				}
 				state = State::Uninitialized;
 				break;
@@ -202,7 +263,7 @@ struct DoubleClickDetector
 		}
 	}
 
-	void onMouseUp (CPoint where, CButtonState buttons, xcb_timestamp_t time)
+	void onMouseUp (CPoint where, MouseEventButtonState buttonState, xcb_timestamp_t time)
 	{
 		if (state == State::MouseDown && pointInside (where))
 			state = State::MouseUp;
@@ -210,13 +271,12 @@ struct DoubleClickDetector
 			state = State::Uninitialized;
 	}
 
-	void onMouseMove (CPoint where, CButtonState buttons, xcb_timestamp_t time)
+	void onMouseMove (CPoint where, MouseEventButtonState buttonState, xcb_timestamp_t time)
 	{
 		if (!pointInside (where))
 			state = State::Uninitialized;
 	}
 
-private:
 	bool timeInside (xcb_timestamp_t time)
 	{
 		constexpr xcb_timestamp_t threshold = 250; // in milliseconds
@@ -240,8 +300,9 @@ private:
 	};
 
 	State state {State::Uninitialized};
+	bool isDoubleClick {false};
 	CPoint point;
-	CButtonState firstClickState;
+	MouseEventButtonState firstClickState;
 	xcb_timestamp_t firstClickTime {0};
 };
 
@@ -303,9 +364,7 @@ struct Frame::Impl : IFrameEventHandler
 	//------------------------------------------------------------------------
 	void redraw ()
 	{
-		drawHandler.draw (dirtyRects, [&] (CDrawContext* context, const CRect& rect) {
-			frame->platformDrawRect (context, rect);
-		});
+		drawHandler.draw (dirtyRects, frame);
 		dirtyRects.clear ();
 	}
 
@@ -363,15 +422,8 @@ struct Frame::Impl : IFrameEventHandler
 	void onEvent (xcb_key_press_event_t& event) override
 	{
 		auto type = (event.response_type & ~0x80);
-		auto keyCode = RunLoop::instance ().getCurrentKeyEvent ();
-		if (type == XCB_KEY_PRESS)
-		{
-			frame->platformOnKeyDown (keyCode);
-		}
-		else
-		{
-			frame->platformOnKeyUp (keyCode);
-		}
+		auto keyEvent = RunLoop::instance ().getCurrentKeyEvent ();
+		frame->platformOnEvent (keyEvent);
 	}
 
 	//------------------------------------------------------------------------
@@ -382,39 +434,44 @@ struct Frame::Impl : IFrameEventHandler
 		{
 			if (event.detail >= 4 && event.detail <= 7) // mouse wheel
 			{
-				auto buttons = translateModifiers (event.state);
+				MouseWheelEvent wheelEvent;
+				wheelEvent.mousePosition = where;
+				wheelEvent.modifiers = toModifiers (event.state);
 				switch (event.detail)
 				{
 					case 4: // up
 					{
-						frame->platformOnMouseWheel (where, kMouseWheelAxisY, 1, buttons);
+						wheelEvent.deltaY = 1;
 						break;
 					}
 					case 5: // down
 					{
-						frame->platformOnMouseWheel (where, kMouseWheelAxisY, -1, buttons);
+						wheelEvent.deltaY = -1;
 						break;
 					}
 					case 6: // left
 					{
-						frame->platformOnMouseWheel (where, kMouseWheelAxisX, -1, buttons);
+						wheelEvent.deltaX = -1;
 						break;
 					}
 					case 7: // right
 					{
-						frame->platformOnMouseWheel (where, kMouseWheelAxisX, 1, buttons);
+						wheelEvent.deltaX = 1;
 						break;
 					}
 				}
+				frame->platformOnEvent (wheelEvent);
 			}
 			else // mouse down
 			{
-				auto buttons = translateMouseButtons (event.detail);
-				buttons |= translateModifiers (event.state);
-				doubleClickDetector.onMouseDown (where, buttons, event.time);
-				auto result = frame->platformOnMouseDown (where, buttons);
+				MouseDownEvent downEvent;
+				downEvent.mousePosition = where;
+				setupMouseEventButtons (downEvent, event.detail);
+				setupEventModifiers (downEvent.modifiers, event.state);
+				doubleClickDetector.onEvent (downEvent, event.time);
+				frame->platformOnEvent (downEvent);
 				grabPointer ();
-				if (result != kMouseEventNotHandled)
+				if (downEvent.consumed)
 				{
 					auto xcb = RunLoop::instance ().getXcbConnection ();
 					xcb_set_input_focus (xcb, XCB_INPUT_FOCUS_PARENT, window.getID (),
@@ -429,10 +486,12 @@ struct Frame::Impl : IFrameEventHandler
 			}
 			else
 			{
-				auto buttons = translateMouseButtons (event.detail);
-				buttons |= translateModifiers (event.state);
-				doubleClickDetector.onMouseUp (where, buttons, event.time);
-				frame->platformOnMouseUp (where, buttons);
+				MouseUpEvent upEvent;
+				upEvent.mousePosition = where;
+				setupMouseEventButtons (upEvent, event.detail);
+				setupEventModifiers (upEvent.modifiers, event.state);
+				doubleClickDetector.onEvent (upEvent, event.time);
+				frame->platformOnEvent (upEvent);
 				ungrabPointer ();
 			}
 		}
@@ -441,11 +500,12 @@ struct Frame::Impl : IFrameEventHandler
 	//------------------------------------------------------------------------
 	void onEvent (xcb_motion_notify_event_t& event) override
 	{
-		CPoint where (event.event_x, event.event_y);
-		auto buttons = translateMouseButtons (event.state);
-		buttons |= translateModifiers (event.state);
-		doubleClickDetector.onMouseMove (where, buttons, event.time);
-		frame->platformOnMouseMoved (where, buttons);
+		MouseMoveEvent moveEvent;
+		moveEvent.mousePosition (event.event_x, event.event_y);
+		setupMouseEventButtons (moveEvent, event.state);
+		setupEventModifiers (moveEvent.modifiers, event.state);
+		doubleClickDetector.onEvent (moveEvent, event.time);
+		frame->platformOnEvent (moveEvent);
 		// make sure we get more motion events
 		auto xcb = RunLoop::instance ().getXcbConnection ();
 		xcb_get_motion_events (xcb, window.getID (), event.time, event.time + 10000000);
@@ -456,10 +516,11 @@ struct Frame::Impl : IFrameEventHandler
 	{
 		if ((event.response_type & ~0x80) == XCB_LEAVE_NOTIFY)
 		{
-			CPoint where (event.event_x, event.event_y);
-			auto buttons = translateMouseButtons (event.state);
-			buttons |= translateModifiers (event.state);
-			frame->platformOnMouseExited (where, buttons);
+			MouseExitEvent exitEvent;
+			exitEvent.mousePosition (event.event_x, event.event_y);
+			setupMouseEventButtons (exitEvent, event.state);
+			setupEventModifiers (exitEvent.modifiers, event.state);
+			frame->platformOnEvent (exitEvent);
 			setCursorInternal (kCursorDefault);
 		}
 		else
@@ -646,6 +707,12 @@ bool Frame::getCurrentMouseButtons (CButtonState& buttons) const
 }
 
 //------------------------------------------------------------------------
+bool Frame::getCurrentModifiers (Modifiers& modifiers) const
+{
+	return false;
+}
+
+//------------------------------------------------------------------------
 bool Frame::setMouseCursor (CCursorType type)
 {
 	impl->setCursor (type);
@@ -706,7 +773,8 @@ SharedPointer<IPlatformOptionMenu> Frame::createPlatformOptionMenu ()
 	GenericOptionMenuTheme theme;
 	if (impl->genericOptionMenuTheme)
 		theme = *impl->genericOptionMenuTheme.get ();
-	auto optionMenu = makeOwned<GenericOptionMenu> (cFrame, 0, theme);
+	auto optionMenu =
+		makeOwned<GenericOptionMenu> (cFrame, MouseEventButtonState (MouseButton::Left), theme);
 	optionMenu->setListener (this);
 	return optionMenu;
 }

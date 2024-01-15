@@ -1,4 +1,4 @@
-// This file is part of VSTGUI. It is subject to the license terms 
+// This file is part of VSTGUI. It is subject to the license terms
 // in the LICENSE file found in the top-level directory of this
 // distribution and at http://github.com/steinbergmedia/vstgui/LICENSE
 
@@ -8,13 +8,14 @@
 #include "../cframe.h"
 #include "../cgraphicspath.h"
 #include "../cvstguitimer.h"
+#include "../events.h"
 #include <cmath>
 
 namespace VSTGUI {
 #if TARGET_OS_IPHONE
-static const float kCKnobRange = 300.f;
+static const float kCKnobRangeDefault = 300.f;
 #else
-static const float kCKnobRange = 200.f;
+static const float kCKnobRangeDefault = 200.f;
 #endif
 
 static constexpr CViewAttributeID kCKnobMouseStateAttribute = 'knms';
@@ -39,6 +40,7 @@ CKnobBase::CKnobBase (const CRect& size, IControlListener* listener, int32_t tag
 	setStartAngle ((float)(3.f * Constants::quarter_pi));
 	setRangeAngle ((float)(3.f * Constants::half_pi));
 	zoomFactor = 1.5f;
+	knobRange = kCKnobRangeDefault;
 }
 
 //------------------------------------------------------------------------
@@ -104,12 +106,6 @@ CMouseEventResult CKnobBase::onMouseDown (CPoint& where, const CButtonState& but
 	invalidMouseWheelEditTimer (this);
 	beginEdit ();
 
-	if (checkDefaultValue (buttons))
-	{
-		endEdit ();
-		return kMouseDownEventHandledButDontNeedMovedOrUpEvents;
-	}
-
 	auto& mouseState = getMouseEditingState ();
 	mouseState.firstPoint = where;
 	mouseState.lastPoint (-1, -1);
@@ -117,7 +113,7 @@ CMouseEventResult CKnobBase::onMouseDown (CPoint& where, const CButtonState& but
 
 	mouseState.modeLinear = false;
 	mouseState.entryState = value;
-	mouseState.range = kCKnobRange;
+	mouseState.range = knobRange;
 	mouseState.coef = (getMax () - getMin ()) / mouseState.range;
 	mouseState.oldButton = buttons;
 
@@ -198,7 +194,7 @@ CMouseEventResult CKnobBase::onMouseMoved (CPoint& where, const CButtonState& bu
 				CCoord diff = (mouseState.firstPoint.y - where.y) + (where.x - mouseState.firstPoint.x);
 				if (buttons != mouseState.oldButton)
 				{
-					mouseState.range = kCKnobRange;
+					mouseState.range = knobRange;
 					if (buttons & kZoomModifier)
 						mouseState.range *= zoomFactor;
 
@@ -232,18 +228,15 @@ CMouseEventResult CKnobBase::onMouseMoved (CPoint& where, const CButtonState& bu
 }
 
 //------------------------------------------------------------------------
-bool CKnobBase::onWheel (const CPoint& where, const CMouseWheelAxis& axis, const float &distance, const CButtonState &buttons)
+void CKnobBase::onMouseWheelEvent (MouseWheelEvent& event)
 {
-	if (!getMouseEnabled ())
-		return false;
-
 	onMouseWheelEditing (this);
 
 	float v = getValueNormalized ();
-	if (buttons & kZoomModifier)
-		v += 0.1f * distance * getWheelInc ();
+	if (buttonStateFromEventModifiers (event.modifiers) & kZoomModifier)
+		v += 0.1f * static_cast<float> (event.deltaY) * getWheelInc ();
 	else
-		v += distance * getWheelInc ();
+		v += static_cast<float> (event.deltaY) * getWheelInc ();
 	setValueNormalized (v);
 
 	if (isDirty ())
@@ -251,25 +244,27 @@ bool CKnobBase::onWheel (const CPoint& where, const CMouseWheelAxis& axis, const
 		invalid ();
 		valueChanged ();
 	}
-	return true;
+	event.consumed = true;
 }
 
 //------------------------------------------------------------------------
-int32_t CKnobBase::onKeyDown (VstKeyCode& keyCode)
+void CKnobBase::onKeyboardEvent (KeyboardEvent& event)
 {
-	switch (keyCode.virt)
+	if (event.type != EventType::KeyDown)
+		return;
+	switch (event.virt)
 	{
-		case VKEY_UP :
-		case VKEY_RIGHT :
-		case VKEY_DOWN :
-		case VKEY_LEFT :
+		case VirtualKey::Up :
+		case VirtualKey::Right :
+		case VirtualKey::Down :
+		case VirtualKey::Left :
 		{
 			float distance = 1.f;
-			if (keyCode.virt == VKEY_DOWN || keyCode.virt == VKEY_LEFT)
+			if (event.virt == VirtualKey::Down || event.virt == VirtualKey::Left)
 				distance = -distance;
 
 			float v = getValueNormalized ();
-			if (mapVstKeyModifier (keyCode.modifier) & kZoomModifier)
+			if (buttonStateFromEventModifiers (event.modifiers) & kZoomModifier)
 				v += 0.1f * distance * getWheelInc ();
 			else
 				v += distance * getWheelInc ();
@@ -278,28 +273,23 @@ int32_t CKnobBase::onKeyDown (VstKeyCode& keyCode)
 			if (isDirty ())
 			{
 				invalid ();
-
-				// begin of edit parameter
 				beginEdit ();
-				
 				valueChanged ();
-			
-				// end of edit parameter
 				endEdit ();
 			}
-			return 1;
+			event.consumed = true;
 		}
-		case VKEY_ESCAPE:
+		case VirtualKey::Escape:
 		{
 			if (isEditing ())
 			{
 				onMouseCancel ();
-				return 1;
+				event.consumed = true;
 			}
 			break;
 		}
+		default: return;
 	}
-	return -1;
 }
 
 //------------------------------------------------------------------------
@@ -429,7 +419,7 @@ CKnob::CKnob (const CRect& size, IControlListener* listener, int32_t tag, CBitma
 	{
 		inset = 3;
 	}
-	
+
 	colorShadowHandle = kGreyCColor;
 	colorHandle = kWhiteCColor;
 	coronaLineStyle = kLineOnOffDash;
@@ -622,7 +612,7 @@ void CKnob::drawHandleAsLine (CDrawContext* pContext) const
 	pContext->setLineStyle (CLineStyle (CLineStyle::kLineCapRound));
 	pContext->setDrawMode (kAntiAliasing | kNonIntegralMode);
 	pContext->drawLine (where, origin);
-	
+
 	where.offset (1, -1);
 	origin.offset (1, -1);
 	pContext->setFrameColor (colorHandle);
@@ -755,8 +745,9 @@ void CKnob::setHandleBitmap (CBitmap* bitmap)
 // CAnimKnob
 //------------------------------------------------------------------------
 /*! @class CAnimKnob
-Such as a CKnob control object, but there is a unique bitmap which contains different views (subbitmaps) of this knob.
-According to the value, a specific subbitmap is displayed. The different subbitmaps are stacked in the bitmap object.
+Such as a CKnob control object, but there is a unique bitmap which contains different views
+(subbitmaps) of this knob. According to the value, a specific subbitmap is displayed. Use a
+CMultiFrameBitmap for its background bitmap.
 */
 //------------------------------------------------------------------------
 /**
@@ -765,18 +756,69 @@ According to the value, a specific subbitmap is displayed. The different subbitm
  * @param listener the listener
  * @param tag the control tag
  * @param background the background bitmap
- * @param offset unused
  */
 //------------------------------------------------------------------------
-CAnimKnob::CAnimKnob (const CRect& size, IControlListener* listener, int32_t tag, CBitmap* background, const CPoint &offset)
-: CKnobBase (size, listener, tag, background)
-, bInverseBitmap (false)
+CAnimKnob::CAnimKnob (const CRect& size, IControlListener* listener, int32_t tag,
+					  CBitmap* background)
+: CKnobBase (size, listener, tag, background), bInverseBitmap (false)
 {
+#if VSTGUI_ENABLE_DEPRECATED_METHODS
 	heightOfOneImage = size.getHeight ();
-	setNumSubPixmaps (background ? (int32_t)(background->getHeight () / heightOfOneImage) : 0);
+	setNumSubPixmaps (0);
+	if (background)
+	{
+		if (auto frameBitmap = dynamic_cast<CMultiFrameBitmap*> (background))
+		{
+			heightOfOneImage = frameBitmap->getFrameSize ().y;
+			setNumSubPixmaps (frameBitmap->getNumFrames ());
+		}
+		else
+		{
+			setNumSubPixmaps ((int32_t)(background->getHeight () / heightOfOneImage));
+		}
+	}
+#endif
 	inset = 0;
 }
 
+//------------------------------------------------------------------------
+CAnimKnob::CAnimKnob (const CAnimKnob& v)
+: CKnobBase (v)
+, bInverseBitmap (v.bInverseBitmap)
+{
+#if VSTGUI_ENABLE_DEPRECATED_METHODS
+	setNumSubPixmaps (v.subPixmaps);
+	setHeightOfOneImage (v.heightOfOneImage);
+#endif
+}
+
+//-----------------------------------------------------------------------------------------------
+bool CAnimKnob::sizeToFit ()
+{
+	if (auto bitmap = getDrawBackground ())
+	{
+		CRect vs (getViewSize ());
+		if (auto frameBitmap = dynamic_cast<CMultiFrameBitmap*> (bitmap))
+		{
+			vs.setSize (frameBitmap->getFrameSize ());
+		}
+		else
+		{
+			vs.setWidth (bitmap->getWidth ());
+#if VSTGUI_ENABLE_DEPRECATED_METHODS
+			vs.setHeight (getHeightOfOneImage ());
+#else
+			vs.setHeight (bitmap->getHeight ());
+#endif
+		}
+		setViewSize (vs);
+		setMouseableArea (vs);
+		return true;
+	}
+	return false;
+}
+
+#if VSTGUI_ENABLE_DEPRECATED_METHODS
 //------------------------------------------------------------------------
 /**
  * CAnimKnob constructor.
@@ -789,75 +831,79 @@ CAnimKnob::CAnimKnob (const CRect& size, IControlListener* listener, int32_t tag
  * @param offset unused
  */
 //------------------------------------------------------------------------
-CAnimKnob::CAnimKnob (const CRect& size, IControlListener* listener, int32_t tag, int32_t subPixmaps, CCoord heightOfOneImage, CBitmap* background, const CPoint &offset)
-: CKnobBase (size, listener, tag, background)
-, bInverseBitmap (false)
+CAnimKnob::CAnimKnob (const CRect& size, IControlListener* listener, int32_t tag,
+					  int32_t subPixmaps, CCoord heightOfOneImage, CBitmap* background,
+					  const CPoint& offset)
+: CKnobBase (size, listener, tag, background), bInverseBitmap (false)
 {
+	vstgui_assert (background && !dynamic_cast<CMultiFrameBitmap*> (background),
+				   "Use the other constrcutor when using a CMultiFrameBitmap");
 	setNumSubPixmaps (subPixmaps);
 	setHeightOfOneImage (heightOfOneImage);
 	inset = 0;
 }
 
-//------------------------------------------------------------------------
-CAnimKnob::CAnimKnob (const CAnimKnob& v)
-: CKnobBase (v)
-, bInverseBitmap (v.bInverseBitmap)
-{
-	setNumSubPixmaps (v.subPixmaps);
-	setHeightOfOneImage (v.heightOfOneImage);
-}
-
-//-----------------------------------------------------------------------------------------------
-bool CAnimKnob::sizeToFit ()
-{
-	if (getDrawBackground ())
-	{
-		CRect vs (getViewSize ());
-		vs.setWidth (getDrawBackground ()->getWidth ());
-		vs.setHeight (getHeightOfOneImage ());
-		setViewSize (vs);
-		setMouseableArea (vs);
-		return true;
-	}
-	return false;
-}
-
 //-----------------------------------------------------------------------------------------------
 void CAnimKnob::setHeightOfOneImage (const CCoord& height)
 {
+	if (dynamic_cast<CMultiFrameBitmap*> (getDrawBackground ()))
+		return;
 	IMultiBitmapControl::setHeightOfOneImage (height);
 	if (getDrawBackground () && heightOfOneImage > 0)
 		setNumSubPixmaps ((int32_t)(getDrawBackground ()->getHeight () / heightOfOneImage));
 }
+#endif
 
 //-----------------------------------------------------------------------------------------------
 void CAnimKnob::setBackground (CBitmap *background)
 {
 	CKnobBase::setBackground (background);
+#if VSTGUI_ENABLE_DEPRECATED_METHODS
+	if (auto frameBitmap = dynamic_cast<CMultiFrameBitmap*> (background))
+	{
+		heightOfOneImage = frameBitmap->getFrameSize ().y;
+		setNumSubPixmaps (frameBitmap->getNumFrames ());
+		return;
+	}
+
 	if (heightOfOneImage == 0)
 		heightOfOneImage = getViewSize ().getHeight ();
 	if (background && heightOfOneImage > 0)
 		setNumSubPixmaps ((int32_t)(background->getHeight () / heightOfOneImage));
+#endif
 }
 
 //------------------------------------------------------------------------
 void CAnimKnob::draw (CDrawContext *pContext)
 {
-	if (getDrawBackground ())
+	if (auto bitmap = getDrawBackground ())
 	{
-		CPoint where (0, 0);
-		float val = getValueNormalized ();
-		if (val >= 0.f && heightOfOneImage > 0.)
+		if (auto mfb = dynamic_cast<CMultiFrameBitmap*> (bitmap))
 		{
-			CCoord tmp = heightOfOneImage * (getNumSubPixmaps () - 1);
+			auto frameIndex = getMultiFrameBitmapIndex (*mfb, getValueNormalized ());
 			if (bInverseBitmap)
-				where.y = floor ((1. - val) * tmp);
-			else
-				where.y = floor (val * tmp);
-			where.y -= (int32_t)where.y % (int32_t)heightOfOneImage;
+				frameIndex = getInverseIndex (*mfb, frameIndex);
+			mfb->drawFrame (pContext, frameIndex, getViewSize ().getTopLeft ());
 		}
-
-		getDrawBackground ()->draw (pContext, getViewSize (), where);
+		else
+		{
+#if VSTGUI_ENABLE_DEPRECATED_METHODS
+			CPoint where (0, 0);
+			float val = getValueNormalized ();
+			if (val >= 0.f && heightOfOneImage > 0.)
+			{
+				CCoord tmp = heightOfOneImage * (getNumSubPixmaps () - 1);
+				if (bInverseBitmap)
+					where.y = floor ((1. - val) * tmp);
+				else
+					where.y = floor (val * tmp);
+				where.y -= (int32_t)where.y % (int32_t)heightOfOneImage;
+			}
+			bitmap->draw (pContext, getViewSize (), where);
+#else
+			CView::draw (pContext);
+#endif
+		}
 	}
 	setDirty (false);
 }

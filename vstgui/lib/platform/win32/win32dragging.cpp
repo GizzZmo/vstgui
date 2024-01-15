@@ -4,9 +4,10 @@
 
 #include "win32dragging.h"
 #include "win32support.h"
+#include "win32factory.h"
 #include "winstring.h"
-#include "../../cstring.h"
 #include "../../cdrawcontext.h"
+#include "../../cstring.h"
 #include "../../cvstguitimer.h"
 #include "win32dll.h"
 #include <dwmapi.h>
@@ -236,7 +237,7 @@ COM_DECLSPEC_NOTHROW STDMETHODIMP CDropTarget::DragEnter (IDataObject* dataObjec
 		DragEventData data;
 		data.drag = dragData;
 		pFrame->getCurrentMousePosition (data.pos);
-		pFrame->getCurrentMouseButtons (data.modifiers);
+		pFrame->getCurrentModifiers (data.modifiers);
 		auto result = pFrame->getFrame ()->platformOnDragEnter (data);
 		if (result == DragOperation::Copy)
 			*effect = DROPEFFECT_COPY;
@@ -258,7 +259,7 @@ COM_DECLSPEC_NOTHROW STDMETHODIMP CDropTarget::DragOver (DWORD keyState, POINTL 
 		DragEventData data;
 		data.drag = dragData;
 		pFrame->getCurrentMousePosition (data.pos);
-		pFrame->getCurrentMouseButtons (data.modifiers);
+		pFrame->getCurrentModifiers (data.modifiers);
 		auto result = pFrame->getFrame ()->platformOnDragMove (data);
 		if (result == DragOperation::Copy)
 			*effect = DROPEFFECT_COPY;
@@ -278,7 +279,7 @@ COM_DECLSPEC_NOTHROW STDMETHODIMP CDropTarget::DragLeave ()
 		DragEventData data;
 		data.drag = dragData;
 		pFrame->getCurrentMousePosition (data.pos);
-		pFrame->getCurrentMouseButtons (data.modifiers);
+		pFrame->getCurrentModifiers (data.modifiers);
 		pFrame->getFrame ()->platformOnDragLeave (data);
 		dragData->forget ();
 		dragData = nullptr;
@@ -294,7 +295,7 @@ COM_DECLSPEC_NOTHROW STDMETHODIMP CDropTarget::Drop (IDataObject* dataObject, DW
 		DragEventData data;
 		data.drag = dragData;
 		pFrame->getCurrentMousePosition (data.pos);
-		pFrame->getCurrentMouseButtons (data.modifiers);
+		pFrame->getCurrentModifiers (data.modifiers);
 		pFrame->getFrame ()->platformOnDrop (data);
 		dragData->forget ();
 		dragData = nullptr;
@@ -786,7 +787,7 @@ void Win32DragBitmapWindow::updateWindowPosition (POINT where)
 void Win32DragBitmapWindow::paint ()
 {
 	PAINTSTRUCT ps;
-	HDC hdc = BeginPaint (hwnd, &ps);
+	BeginPaint (hwnd, &ps);
 
 	RECT clientRect;
 	GetClientRect (hwnd, &clientRect);
@@ -795,17 +796,22 @@ void Win32DragBitmapWindow::paint ()
 	rect.setWidth (clientRect.right - clientRect.left);
 	rect.setHeight (clientRect.bottom - clientRect.top);
 
-	if (auto drawContext = owned (createDrawContext (hwnd, hdc, rect)))
+	if (auto deviceContext =
+			getPlatformFactory ().asWin32Factory ()->createGraphicsDeviceContext (hwnd))
 	{
-		drawContext->beginDraw ();
+		CDrawContext drawContext (deviceContext, rect, 1.);
 
-		drawContext->clearRect (rect);
-		drawContext->setGlobalAlpha (0.9f);
-		CDrawContext::Transform t (*drawContext, CGraphicsTransform ().scale (scaleFactor, scaleFactor));
-		bitmap->draw (drawContext, rect);
+		drawContext.beginDraw ();
 
-		drawContext->endDraw ();
+		drawContext.clearRect (rect);
+		drawContext.setGlobalAlpha (0.9f);
+		CDrawContext::Transform t (drawContext,
+								   CGraphicsTransform ().scale (scaleFactor, scaleFactor));
+		bitmap->draw (&drawContext, rect);
+
+		drawContext.endDraw ();
 	}
+
 	EndPaint (hwnd, &ps);
 }
 

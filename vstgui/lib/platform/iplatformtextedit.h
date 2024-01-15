@@ -9,7 +9,7 @@
 #include "../cfont.h"
 #include "../ccolor.h"
 #include "../crect.h"
-#include "../cdrawcontext.h"
+#include "../cdrawdefs.h"
 
 struct VstKeyCode;
 
@@ -29,7 +29,7 @@ public:
 	virtual CRect platformGetVisibleSize () const = 0;
 	virtual CPoint platformGetTextInset () const = 0;
 	virtual void platformLooseFocus (bool returnPressed) = 0;
-	virtual bool platformOnKeyDown (const VstKeyCode& key) = 0;
+	virtual void platformOnKeyboardEvent (KeyboardEvent& event) = 0;
 	virtual void platformTextDidChange () = 0;
 	virtual bool platformIsSecureTextEdit () = 0;
 

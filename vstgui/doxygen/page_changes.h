@@ -1,4 +1,4 @@
-// This file is part of VSTGUI. It is subject to the license terms 
+// This file is part of VSTGUI. It is subject to the license terms
 // in the LICENSE file found in the top-level directory of this
 // distribution and at http://github.com/steinbergmedia/vstgui/LICENSE
 
@@ -11,7 +11,6 @@
 - @ref new_stuff @n
 - @ref code_changes @n
 - @ref hidpi_support @n
-- @ref cocoa_support @n
 - @ref ios_support @n
 - @subpage page_previous_new_stuff
 
@@ -22,6 +21,38 @@ The result is that code written for any earlier version of VSTGUI is not always 
 It's recommended to start new projects with version 4 while old projects should stay with version 3.6.
 
 @section new_stuff New Stuff
+
+@subsection version4_14 Version 4.14
+
+- add crosshair mouse cursor (kCursorCrosshair)
+- customizable knob range (see CKnob::setKnobRange)
+
+@subsection version4_13 Version 4.13
+
+- support embedding platform views (HWND & NSView) as sub views (see CExternalView and ExternalView::IView) and examples in the contrib folder.
+
+@subsection version4_12_2 Version 4.12.2
+
+- make it possible to draw only frames in a range for views using multi frame bitmaps.
+
+@subsection version4_12_1 Version 4.12.1
+
+- make it possible to use the new multi frame bitmap feature with custom value to frame index mappings by subclassing.
+
+@subsection version4_12 Version 4.12
+
+- new multi frame bitmap representation that allows to support more frames per bitmap on current
+hardware by supporting to layout the frames in the bitmap by rows and multiple columns instead of
+one column as before. See VSTGUI::CMultiFrameBitmap. All included controls are updated to support
+it, while the old method is deprecated but still supported for now.
+- the image stitcher tool was updated to support the creation of multi row/column frames bitmap
+
+@subsection version4_11 Version 4.11
+
+- Using DirectComposition on Windows now with support for CLayeredViewContainer
+- Removed 32-bit Carbon support
+- Reworked event handling, please see @ref code_changes_4_10_to_4_11
+- Reworked unit test framework to be able to debug the tests
 
 @subsection version4_10 Version 4.10
 
@@ -61,7 +92,7 @@ It's recommended to start new projects with version 4 while old projects should 
 - preview of @ref standalone_library @n
 - new Controls: VSTGUI::CMultiLineTextLabel, VSTGUI::CSearchTextEdit
 - adopt many c++11 language features
- 
+
 @subsection version4_4 Version 4.4
 
 - preview Linux version
@@ -109,6 +140,60 @@ Note: All current deprecated methods will be removed in the next version. So mak
 - Direct2D drawing on Windows (Windows Vista or Windows 7)
 
 @section code_changes Changes for existing VSTGUI code
+
+@subsection code_changes_4_13_to_4_14 VSTGUI 4.13 -> VSTGUI 4.14
+
+- In CParamDisplay::drawPlatformText(..) the string argument changed from IPlatformString to UTF8Text
+
+@subsection code_changes_4_12_to_4_13 VSTGUI 4.12 -> VSTGUI 4.13
+
+- the context argument of IFontPainter has changed to use the new platform graphics device context
+
+@subsection code_changes_4_11_to_4_12 VSTGUI 4.11 -> VSTGUI 4.12
+
+- The CMultiFrameBitmap change deprecated the VSTGUI::IMultiBitmapControl class. If you use it,
+update your uses and use a VSTGUI::CMultiFrameBitmap instead.
+- If you compile with VSTGUI_ENABLE_DEPRECATED_METHODS=0 you need to update your multi frame bitmaps
+to use VSTGUI::CMultiFrameBitmap.
+- In 4.12.2 the following constructors have lost their offset parameter:
+	- CKickButton
+	- CAnimKnob
+	- CMovieBitmap
+	- CMovieButton
+	- CSwitchBase
+	- CVerticalSwitch
+	- CHorizontalSwitch
+	- CRockerSwitch
+
+@subsection code_changes_4_10_to_4_11 VSTGUI 4.10 -> VSTGUI 4.11
+
+Changes due to event handling rework:
+- IKeyboardHook changed its methods. If you inherit from it, you need to adopt to the new methods or use OldKeyboardHookAdapter
+- IMouseObserver changed a few of its methods. If you inherit from it, you need to adopt to the new methods or use OldMouseObserverAdapter
+- CViewContainer::onWheel is now marked final, you cannot inherit this method, please override the new CView::onMouseWheelEvent instead if you need to handle mouse wheel events in a custom view container
+- DragEventData has changed it's modifiers type from CButtonState to Modifiers
+- CView::hitTest uses an Event now instead of a CButtonState (the method with a CButtonState still works but is deprecated)
+- CControl::checkDefaultValue(CButtonState) was removed and replaced by a generic method which uses
+the static function CControl::CheckDefaultValueEventFunc to reset a control to its default value
+
+CView has the following new methods:
+- dispatchEvent
+- onMouseDownEvent
+- onMouseMoveEvent
+- onMouseUpEvent
+- onMouseCancelEvent
+- onMouseEnterEvent
+- onMouseExitEvent
+- onMouseWheelEvent
+- onZoomGestureEvent
+- onKeyboardEvent
+
+Which replaces the following old methods:
+- onKeyDown
+- onKeyUp
+- onWheel
+
+The old mouse methods (onMouseDown, onMouseUp, onMouseMoved, etc) are still supported but should be replaced with the new methods in the long run.
 
 @subsection code_changes_4_9_to_4_10 VSTGUI 4.9 -> VSTGUI 4.10
 
@@ -198,13 +283,6 @@ Note: All current deprecated methods will be removed in the next version. So mak
 @section hidpi_support HiDPI notes
 - HiDPI is supported on OSX, iOS and Windows (with Direct2D backend)
 - Due to platform differences one need to call frame->setZoom (scaleFactor) on Windows, while on OSX and iOS this is not needed.
- 
-@section cocoa_support Cocoa notes
-
-- To get cocoa support your minimum required Mac OS X version is 10.6.
-- In 32 bit Cocoa and Carbon are available. You can switch between them with CFrame::setCocoaMode(bool state). You must do this before creating the CFrame.
-- In 64 bit only Cocoa is available.
-- The pSystemWindow pointer in the CFrame constructor must be a NSView not a NSWindow.
 
 @section ios_support iOS support notes
 
@@ -213,10 +291,10 @@ Note: All current deprecated methods will be removed in the next version. So mak
 - Support for a single MultiTouch View is not yet tested and the API may change in the future
 
 @page page_previous_new_stuff New Stuff in VSTGUI 3.6 and earlier
- 
+
 @section new_mouse_methods New mouse methods
 
-In earlier versions there were only one method in CView for handling mouse events (VSTGUI::CView::mouse). 
+In earlier versions there were only one method in CView for handling mouse events (VSTGUI::CView::mouse).
 In this version there are five new methods :
 - VSTGUI::CView::onMouseDown	(new in 3.5)
 - VSTGUI::CView::onMouseUp	(new in 3.5)
@@ -330,6 +408,22 @@ please see the "Migrating from 2.3.rtf" file in the Documentation folder.
  *	@ingroup new_in
  */
 //------------------------------------------------------------------------
+/*! @defgroup new_in_4_11 Version 4.11
+ *	@ingroup new_in
+ */
+//------------------------------------------------------------------------
+/*! @defgroup new_in_4_12 Version 4.12
+ *	@ingroup new_in
+ */
+//------------------------------------------------------------------------
+/*! @defgroup new_in_4_12_1 Version 4.12.1
+ *	@ingroup new_in
+ */
+//------------------------------------------------------------------------
+/*! @defgroup new_in_4_12_2 Version 4.12.2
+ *	@ingroup new_in
+ */
+//------------------------------------------------------------------------
 /*! @defgroup views Views
  *	@ingroup viewsandcontrols
  */
@@ -341,5 +435,9 @@ please see the "Migrating from 2.3.rtf" file in the Documentation folder.
 //------------------------------------------------------------------------
 /*! @defgroup containerviews Container Views
  *	@ingroup views
+ */
+//------------------------------------------------------------------------
+/*! @defgroup uses_multi_frame_bitmaps Views using Multi-Frame Bitmaps
+ *	\see CMultiFrameBitmap
  */
 //------------------------------------------------------------------------
